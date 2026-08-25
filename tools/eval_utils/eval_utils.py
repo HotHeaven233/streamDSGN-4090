@@ -44,6 +44,118 @@ def statistics_info(cfg, ret_dict, metric, disp_dict):
                 if k in ['depth_error_fg_median', 'depth_error_median']:
                     disp_dict[k] = '%.3f' % (metric[k] / metric['num'])
 
+
+
+def format_paper_metrics(result_text):
+    """
+    Print only the metrics reported in StreamDSGN Table 1:
+
+      IoU = 0.5:
+        AP_R40 BEV
+        AP_R40 3D
+
+      IoU = 0.7:
+        AP_R40 BEV
+        AP_R40 3D
+
+    for Car, Pedestrian and Cyclist.
+
+    Values are Easy / Moderate / Hard.
+    """
+
+    lines = result_text.splitlines()
+
+    # KITTI evaluator headers corresponding to the paper's two IoU settings.
+    #
+    # Note:
+    # The evaluator prints a triplet:
+    #   bbox threshold, BEV threshold, 3D threshold
+    #
+    # For IoU=0.5 in the paper:
+    #   Car        -> AP_R40@0.70, 0.50, 0.50
+    #   Pedestrian -> AP_R40@0.50, 0.25, 0.25
+    #   Cyclist    -> AP_R40@0.50, 0.25, 0.25
+    #
+    # For IoU=0.7 in the paper:
+    #   Car        -> AP_R40@0.70, 0.70, 0.70
+    #   Pedestrian -> AP_R40@0.50, 0.50, 0.50
+    #   Cyclist    -> AP_R40@0.50, 0.50, 0.50
+    targets = {
+        'Car': {
+            '0.5': 'Car AP_R40@0.70, 0.50, 0.50:',
+            '0.7': 'Car AP_R40@0.70, 0.70, 0.70:',
+        },
+        'Pedestrian': {
+            '0.5': 'Pedestrian AP_R40@0.50, 0.25, 0.25:',
+            '0.7': 'Pedestrian AP_R40@0.50, 0.50, 0.50:',
+        },
+        'Cyclist': {
+            '0.5': 'Cyclist AP_R40@0.50, 0.25, 0.25:',
+            '0.7': 'Cyclist AP_R40@0.50, 0.50, 0.50:',
+        },
+    }
+
+    def extract_block(header):
+        try:
+            idx = next(
+                i for i, line in enumerate(lines)
+                if line.strip() == header
+            )
+        except StopIteration:
+            return None, None
+
+        bev = None
+        d3 = None
+
+        for line in lines[idx + 1:]:
+            stripped = line.strip()
+
+            if (
+                stripped.endswith(':')
+                and (' AP@' in stripped or ' AP_R40@' in stripped)
+            ):
+                break
+
+            if stripped.startswith('bev') and 'AP:' in stripped:
+                bev = stripped.split('AP:', 1)[1].strip()
+
+            elif stripped.startswith('3d') and 'AP:' in stripped:
+                d3 = stripped.split('AP:', 1)[1].strip()
+
+        return bev, d3
+
+    output = [
+        'Paper metrics only (AP_R40)',
+        'Values: Easy / Moderate / Hard',
+    ]
+
+    found = False
+
+    for class_name in ['Car', 'Pedestrian', 'Cyclist']:
+        output.append('')
+        output.append(class_name)
+
+        for iou in ['0.5', '0.7']:
+            bev, d3 = extract_block(targets[class_name][iou])
+
+            if bev is None and d3 is None:
+                continue
+
+            found = True
+
+            output.append('  IoU={}'.format(iou))
+
+            if bev is not None:
+                output.append('    sAPBEV: {}'.format(bev))
+
+            if d3 is not None:
+                output.append('    sAP3D : {}'.format(d3))
+
+    if not found:
+        return result_text
+
+    return '\n'.join(output)
+
 def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, save_to_file=False, result_dir=None):
     result_dir.mkdir(parents=True, exist_ok=True)
 
@@ -172,8 +284,9 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
     for cur_thresh in cfg.MODEL.POST_PROCESSING.RECALL_THRESH_LIST:
         cur_roi_recall = metric['recall_roi_%s' % str(cur_thresh)] / max(gt_num_cnt, 1)
         cur_rcnn_recall = metric['recall_rcnn_%s' % str(cur_thresh)] / max(gt_num_cnt, 1)
-        logger.info('recall_roi_%s: %f' % (cur_thresh, cur_roi_recall))
-        logger.info('recall_rcnn_%s: %f' % (cur_thresh, cur_rcnn_recall))
+        if not getattr(cfg, 'PAPER_METRICS_ONLY', False):
+            logger.info('recall_roi_%s: %f' % (cur_thresh, cur_roi_recall))
+            logger.info('recall_rcnn_%s: %f' % (cur_thresh, cur_rcnn_recall))
         ret_dict['recall/roi_%s' % str(cur_thresh)] = cur_roi_recall
         ret_dict['recall/rcnn_%s' % str(cur_thresh)] = cur_rcnn_recall
     
@@ -202,8 +315,9 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
     total_pred_objects = 0
     for anno in det_annos:
         total_pred_objects += anno['name'].__len__()
-    logger.info('Average predicted number of objects(%d samples): %.3f'
-                % (len(det_annos), total_pred_objects / max(1, len(det_annos))))
+    if not getattr(cfg, 'PAPER_METRICS_ONLY', False):
+        logger.info('Average predicted number of objects(%d samples): %.3f'
+                    % (len(det_annos), total_pred_objects / max(1, len(det_annos))))
 
     with open(result_dir / 'result.pkl', 'wb') as f:
         pickle.dump(det_annos, f)
@@ -218,7 +332,14 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
             output_path=final_output_dir
         )
         for k, v in result_str.items():
-            logger.info('================= eval metric: {} =================\n{}'.format(k, v))
+            if getattr(cfg, 'PAPER_METRICS_ONLY', False):
+                v = format_paper_metrics(v)
+
+            logger.info(
+                '================= eval metric: {} =================\n{}'.format(
+                    k, v
+                )
+            )
         ret_dict.update(result_dict)
     # if det_annos_2d and 'gt_boxes_2d' in batch_dict['token']:
     #     logger.info('---- 2d box evaluation ---- ')

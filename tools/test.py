@@ -40,14 +40,32 @@ def parse_config():
     parser.add_argument('--set', dest='set_cfgs', default=None, nargs=argparse.REMAINDER, help='set extra config keys if needed')
     parser.add_argument('--trainval', action='store_true', default=False, help='')
     parser.add_argument('--imitation', type=str, default="2d")
+    parser.add_argument(
+        '--paper_metrics_only',
+        action='store_true',
+        default=False,
+        help='only print paper-reported AP_R40 BEV/3D metrics'
+    )
+    parser.add_argument(
+        '--infer_time_path',
+        type=str,
+        default=None,
+        help='override inference-time JSON for streaming evaluation'
+    )
 
     args = parser.parse_args()
 
     cfg_from_yaml_file(args.cfg_file, cfg)
     update_cfg_by_args(cfg, args)
+    cfg.PAPER_METRICS_ONLY = args.paper_metrics_only
     cfg.TAG = Path(args.cfg_file).stem
     cfg.EXP_GROUP_PATH = '_'.join(args.cfg_file.split('/')[1:-1])  # remove 'cfgs' and 'xxxx.yaml'
-    cfg.DATA_CONFIG.INFER_TIME_PATH = str(Path('outputs') / 'inference_time' / cfg.EXP_GROUP_PATH / (cfg.TAG + '.json'))
+    cfg.DATA_CONFIG.INFER_TIME_PATH = str(
+        Path('outputs') / 'inference_time' /
+        cfg.EXP_GROUP_PATH / (cfg.TAG + '.json')
+    )
+    if args.infer_time_path is not None:
+        cfg.DATA_CONFIG.INFER_TIME_PATH = args.infer_time_path
     
     np.random.seed(1024)
 
