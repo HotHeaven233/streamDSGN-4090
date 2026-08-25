@@ -156,7 +156,10 @@ class FeatureAlignment(nn.Module):
         if self.pixel_level_warping:
             self.warp_feature = feature_flow_utils.feature_adjusting
         else:
-            self.warp_feature = warp_feature
+            # Same numerical algorithm as warp_feature(), but cache the
+            # static base grid and all-ones mask to remove repeated CPU
+            # allocation and CPU->GPU transfer jitter.
+            self.warp_feature = self.warp_feature_cached
 
         self.attn_cfg = self.model_cfg.get('ATTN_CFG', None)
         if self.attn_cfg is not None:
@@ -174,6 +177,131 @@ class FeatureAlignment(nn.Module):
             self.conv_trans = BaseConv(input_channels, input_channels, ksize=3, stride=1, padding=1, use_norm=False)
 
         self.num_bev_features = input_channels
+
+        # Static warp tensors.
+        # Lazily created on the actual inference device.
+        #
+        # IMPORTANT:
+        # Only cache tensors whose values are independent of input data.
+        # The numerical operations after these tensors are obtained remain
+        # exactly the same as the original implementation.
+        self._warp_grid_cache = {}
+        self._warp_mask_cache = {}
+
+    def _get_cached_warp_grid(self, B, H, W, device):
+        device_idx = device.index if device.index is not None else 0
+        key = (device.type, device_idx, B, H, W)
+
+        if key not in self._warp_grid_cache:
+            # Keep exactly the same construction order/dtype as the
+            # original warp_feature implementation.
+            xx = torch.arange(0, W).view(1, -1).repeat(H, 1)
+            yy = torch.arange(0, H).view(-1, 1).repeat(1, W)
+
+            xx = xx.view(1, 1, H, W).repeat(B, 1, 1, 1)
+            yy = yy.view(1, 1, H, W).repeat(B, 1, 1, 1)
+
+            grid = torch.cat((xx, yy), 1).float()
+
+            if device.type == 'cuda':
+                grid = grid.cuda(device=device)
+            else:
+                grid = grid.to(device)
+
+            self._warp_grid_cache[key] = grid
+
+        return self._warp_grid_cache[key]
+
+    def _get_cached_warp_mask(self, shape, device):
+        B, C, H, W = shape
+
+        device_idx = device.index if device.index is not None else 0
+        key = (device.type, device_idx, B, C, H, W)
+
+        if key not in self._warp_mask_cache:
+            # Original implementation:
+            # torch.ones(x.size(), requires_grad=False).cuda()
+            #
+            # torch.ones defaults to float32, so keep the same dtype.
+            mask = torch.ones(
+                shape,
+                requires_grad=False
+            )
+
+            if device.type == 'cuda':
+                mask = mask.cuda(device=device)
+            else:
+                mask = mask.to(device)
+
+            self._warp_mask_cache[key] = mask
+
+        return self._warp_mask_cache[key]
+
+    def warp_feature_cached(self, x, flow):
+        # Preserve original FP16 -> FP32 behavior exactly.
+        if x.dtype == torch.float16:
+            use_amp = True
+            x = x.float()
+            flow = flow.float()
+        else:
+            use_amp = False
+
+        B, C, H, W = x.size()
+
+        # Same base grid values as original code, but created only once.
+        grid = self._get_cached_warp_grid(
+            B, H, W, x.device
+        )
+
+        # IMPORTANT:
+        # Do NOT normalize/calculate this in advance.
+        # Preserve original floating-point operation order.
+        vgrid = grid + flow
+
+        vgrid[:, 0, :, :] = (
+            2.0 * vgrid[:, 0, :, :]
+            / max(W - 1, 1)
+            - 1.0
+        )
+
+        vgrid[:, 1, :, :] = (
+            2.0 * vgrid[:, 1, :, :]
+            / max(H - 1, 1)
+            - 1.0
+        )
+
+        vgrid = vgrid.permute(
+            0, 2, 3, 1
+        )
+
+        # Exactly the same grid_sample call as original implementation.
+        x_warp = F.grid_sample(
+            x,
+            vgrid,
+            padding_mode='zeros'
+        )
+
+        # Same all-ones float32 mask as original code, now cached.
+        base_mask = self._get_cached_warp_mask(
+            x.size(),
+            x.device
+        )
+
+        mask = F.grid_sample(
+            base_mask,
+            vgrid
+        )
+
+        mask = (
+            mask >= 1.0
+        ).float()
+
+        # Preserve original output casts.
+        if use_amp:
+            x_warp = x_warp.half()
+            mask = mask.half()
+
+        return x_warp * mask
 
     def cuda(self, device=None):
         model = super().cuda(device)

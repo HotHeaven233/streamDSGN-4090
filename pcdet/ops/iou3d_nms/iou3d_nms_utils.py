@@ -11,6 +11,36 @@ from ...utils import common_utils
 from . import numerical_jaccobian
 from . import iou3d_nms_cuda, numerical_jaccobian
 import numba
+import threading
+
+
+# Per-thread reusable NMS keep buffer.
+#
+# The model uses NMS_PRE_MAXSIZE=4096, so allocate a pinned CPU
+# buffer of at least 4096 entries once instead of constructing a
+# new torch.LongTensor for every class of every frame.
+_nms_tls = threading.local()
+
+
+def _get_nms_keep_buffer(size):
+    keep = getattr(
+        _nms_tls,
+        'keep_buffer',
+        None
+    )
+
+    if keep is None or keep.numel() < size:
+        capacity = max(4096, int(size))
+
+        keep = torch.empty(
+            capacity,
+            dtype=torch.long,
+            pin_memory=True
+        )
+
+        _nms_tls.keep_buffer = keep
+
+    return keep[:size]
 
 
 def boxes_bev_iou_cpu(boxes_a, boxes_b):
@@ -98,9 +128,25 @@ def nms_gpu(boxes, scores, thresh, pre_maxsize=None, **kwargs):
         order = order[:pre_maxsize]
 
     boxes = boxes[order].contiguous()
-    keep = torch.LongTensor(boxes.size(0))
-    num_out = iou3d_nms_cuda.nms_gpu(boxes, keep, thresh)
-    return order[keep[:num_out].cuda()].contiguous(), None
+
+    # Reuse a persistent pinned CPU buffer.
+    # The C++ NMS writes exactly the same keep indices into this slice.
+    keep = _get_nms_keep_buffer(
+        boxes.size(0)
+    )
+
+    num_out = iou3d_nms_cuda.nms_gpu(
+        boxes,
+        keep,
+        thresh
+    )
+
+    keep_cuda = keep[:num_out].to(
+        device=order.device,
+        non_blocking=False
+    )
+
+    return order[keep_cuda].contiguous(), None
 
 
 def nms_normal_gpu(boxes, scores, thresh, **kwargs):
@@ -115,9 +161,22 @@ def nms_normal_gpu(boxes, scores, thresh, **kwargs):
 
     boxes = boxes[order].contiguous()
 
-    keep = torch.LongTensor(boxes.size(0))
-    num_out = iou3d_nms_cuda.nms_normal_gpu(boxes, keep, thresh)
-    return order[keep[:num_out].cuda()].contiguous(), None
+    keep = _get_nms_keep_buffer(
+        boxes.size(0)
+    )
+
+    num_out = iou3d_nms_cuda.nms_normal_gpu(
+        boxes,
+        keep,
+        thresh
+    )
+
+    keep_cuda = keep[:num_out].to(
+        device=order.device,
+        non_blocking=False
+    )
+
+    return order[keep_cuda].contiguous(), None
 
 
 class BoxesIou3dDifferentiableFunction(torch.autograd.Function):

@@ -40,6 +40,162 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 const int THREADS_PER_BLOCK_NMS = sizeof(unsigned long long) * 8;
 
 
+/*
+ * Reusable NMS workspace.
+ *
+ * This changes only memory allocation strategy.
+ * The NMS CUDA kernel, IoU calculation, CPU suppression order,
+ * threshold and returned indices are unchanged.
+ *
+ * The current StreamDSGN config uses NMS_PRE_MAXSIZE=4096, so
+ * preallocating workspace for at least 4096 boxes removes almost
+ * all runtime allocation from steady-state inference.
+ */
+struct NmsWorkspace {
+    unsigned long long *mask_gpu = nullptr;
+    unsigned long long *mask_cpu = nullptr;
+
+    size_t mask_capacity_elems = 0;
+
+    int gpu_device = -1;
+
+    std::vector<unsigned long long> remv_cpu;
+};
+
+static thread_local NmsWorkspace g_nms_workspace;
+
+
+static void ensure_nms_workspace(
+    size_t required_mask_elems,
+    int required_col_blocks)
+{
+    NmsWorkspace &ws = g_nms_workspace;
+
+    int current_device = -1;
+    CHECK_ERROR(cudaGetDevice(&current_device));
+
+    /*
+     * Maximum workspace normally needed by this project's
+     * NMS_PRE_MAXSIZE=4096:
+     *
+     * 4096 * ceil(4096 / 64) uint64 values = 262144 values
+     *                                          = 2 MiB.
+     */
+    const size_t default_mask_elems =
+        static_cast<size_t>(4096) *
+        static_cast<size_t>(DIVUP(4096, THREADS_PER_BLOCK_NMS));
+
+    size_t wanted_elems = required_mask_elems;
+    if (wanted_elems < default_mask_elems) {
+        wanted_elems = default_mask_elems;
+    }
+
+    /*
+     * CUDA device changed: discard only the device-side workspace.
+     * Pinned host memory is device independent and may still be reused.
+     */
+    if (ws.gpu_device != -1 && ws.gpu_device != current_device) {
+        if (ws.mask_gpu != nullptr) {
+            int restore_device = current_device;
+
+            CHECK_ERROR(cudaSetDevice(ws.gpu_device));
+            CHECK_ERROR(cudaFree(ws.mask_gpu));
+            CHECK_ERROR(cudaSetDevice(restore_device));
+
+            ws.mask_gpu = nullptr;
+        }
+
+        ws.gpu_device = current_device;
+
+        /*
+         * GPU buffer has to be allocated again for the new device.
+         * Host capacity remains valid.
+         */
+        if (wanted_elems < ws.mask_capacity_elems) {
+            wanted_elems = ws.mask_capacity_elems;
+        }
+
+        CHECK_ERROR(
+            cudaMalloc(
+                reinterpret_cast<void **>(&ws.mask_gpu),
+                wanted_elems * sizeof(unsigned long long)
+            )
+        );
+
+        /*
+         * Host buffer may not exist yet.
+         */
+        if (ws.mask_cpu == nullptr) {
+            CHECK_ERROR(
+                cudaMallocHost(
+                    reinterpret_cast<void **>(&ws.mask_cpu),
+                    wanted_elems * sizeof(unsigned long long)
+                )
+            );
+        }
+
+        ws.mask_capacity_elems = wanted_elems;
+    }
+
+    if (ws.gpu_device == -1) {
+        ws.gpu_device = current_device;
+    }
+
+    /*
+     * First allocation or capacity growth.
+     */
+    if (
+        ws.mask_gpu == nullptr ||
+        ws.mask_cpu == nullptr ||
+        ws.mask_capacity_elems < wanted_elems
+    ) {
+        size_t new_capacity = wanted_elems;
+
+        if (ws.mask_gpu != nullptr) {
+            CHECK_ERROR(cudaFree(ws.mask_gpu));
+            ws.mask_gpu = nullptr;
+        }
+
+        if (ws.mask_cpu != nullptr) {
+            CHECK_ERROR(cudaFreeHost(ws.mask_cpu));
+            ws.mask_cpu = nullptr;
+        }
+
+        CHECK_ERROR(
+            cudaMalloc(
+                reinterpret_cast<void **>(&ws.mask_gpu),
+                new_capacity * sizeof(unsigned long long)
+            )
+        );
+
+        CHECK_ERROR(
+            cudaMallocHost(
+                reinterpret_cast<void **>(&ws.mask_cpu),
+                new_capacity * sizeof(unsigned long long)
+            )
+        );
+
+        ws.mask_capacity_elems = new_capacity;
+    }
+
+    /*
+     * The current config requires at most 64 uint64 blocks for
+     * 4096 candidates. Reserve this once to remove vector growth.
+     */
+    if (ws.remv_cpu.capacity() < 64) {
+        ws.remv_cpu.reserve(64);
+    }
+
+    ws.remv_cpu.resize(required_col_blocks);
+
+    memset(
+        ws.remv_cpu.data(),
+        0,
+        required_col_blocks * sizeof(unsigned long long)
+    );
+}
+
+
 void boxesoverlapLauncher(const int num_a, const float *boxes_a, const int num_b, const float *boxes_b, float *ans_overlap);
 void boxesoverlapOnebyoneLauncher(const int num_a, const float *boxes_a, const float *boxes_b, float *ans_overlap);
 void boxesioubevLauncher(const int num_a, const float *boxes_a, const int num_b, const float *boxes_b, float *ans_iou);
@@ -138,40 +294,72 @@ int nms_gpu(at::Tensor boxes, at::Tensor keep, float nms_overlap_thresh){
     const float * boxes_data = boxes.data<float>();
     long * keep_data = keep.data<long>();
 
-    const int col_blocks = DIVUP(boxes_num, THREADS_PER_BLOCK_NMS);
+    const int col_blocks =
+        DIVUP(boxes_num, THREADS_PER_BLOCK_NMS);
 
-    unsigned long long *mask_data = NULL;
-    CHECK_ERROR(cudaMalloc((void**)&mask_data, boxes_num * col_blocks * sizeof(unsigned long long)));
-    nmsLauncher(boxes_data, mask_data, boxes_num, nms_overlap_thresh);
+    const size_t mask_elems =
+        static_cast<size_t>(boxes_num) *
+        static_cast<size_t>(col_blocks);
 
-    // unsigned long long mask_cpu[boxes_num * col_blocks];
-    // unsigned long long *mask_cpu = new unsigned long long [boxes_num * col_blocks];
-    std::vector<unsigned long long> mask_cpu(boxes_num * col_blocks);
+    ensure_nms_workspace(
+        mask_elems,
+        col_blocks
+    );
 
-//    printf("boxes_num=%d, col_blocks=%d\n", boxes_num, col_blocks);
-    CHECK_ERROR(cudaMemcpy(&mask_cpu[0], mask_data, boxes_num * col_blocks * sizeof(unsigned long long),
-                           cudaMemcpyDeviceToHost));
+    NmsWorkspace &ws = g_nms_workspace;
 
-    cudaFree(mask_data);
+    /*
+     * Identical CUDA NMS kernel.
+     */
+    nmsLauncher(
+        boxes_data,
+        ws.mask_gpu,
+        boxes_num,
+        nms_overlap_thresh
+    );
 
-    unsigned long long remv_cpu[col_blocks];
-    memset(remv_cpu, 0, col_blocks * sizeof(unsigned long long));
+    /*
+     * Same D2H mask copy as before, but destination is persistent
+     * pinned memory instead of a newly allocated std::vector.
+     *
+     * cudaMemcpy remains synchronous, preserving the original
+     * execution dependency before the CPU suppression loop.
+     */
+    CHECK_ERROR(
+        cudaMemcpy(
+            ws.mask_cpu,
+            ws.mask_gpu,
+            mask_elems * sizeof(unsigned long long),
+            cudaMemcpyDeviceToHost
+        )
+    );
 
     int num_to_keep = 0;
 
+    /*
+     * CPU suppression loop is intentionally identical to original.
+     */
     for (int i = 0; i < boxes_num; i++){
         int nblock = i / THREADS_PER_BLOCK_NMS;
         int inblock = i % THREADS_PER_BLOCK_NMS;
 
-        if (!(remv_cpu[nblock] & (1ULL << inblock))){
+        if (!(ws.remv_cpu[nblock] & (1ULL << inblock))){
             keep_data[num_to_keep++] = i;
-            unsigned long long *p = &mask_cpu[0] + i * col_blocks;
+
+            unsigned long long *p =
+                ws.mask_cpu +
+                static_cast<size_t>(i) *
+                static_cast<size_t>(col_blocks);
+
             for (int j = nblock; j < col_blocks; j++){
-                remv_cpu[j] |= p[j];
+                ws.remv_cpu[j] |= p[j];
             }
         }
     }
-    if ( cudaSuccess != cudaGetLastError() ) printf( "Error!\n" );
+
+    if (cudaSuccess != cudaGetLastError()) {
+        printf("Error!\n");
+    }
 
     return num_to_keep;
 }
@@ -188,24 +376,35 @@ int nms_normal_gpu(at::Tensor boxes, at::Tensor keep, float nms_overlap_thresh){
     const float * boxes_data = boxes.data<float>();
     long * keep_data = keep.data<long>();
 
-    const int col_blocks = DIVUP(boxes_num, THREADS_PER_BLOCK_NMS);
+    const int col_blocks =
+        DIVUP(boxes_num, THREADS_PER_BLOCK_NMS);
 
-    unsigned long long *mask_data = NULL;
-    CHECK_ERROR(cudaMalloc((void**)&mask_data, boxes_num * col_blocks * sizeof(unsigned long long)));
-    nmsNormalLauncher(boxes_data, mask_data, boxes_num, nms_overlap_thresh);
+    const size_t mask_elems =
+        static_cast<size_t>(boxes_num) *
+        static_cast<size_t>(col_blocks);
 
-    // unsigned long long mask_cpu[boxes_num * col_blocks];
-    // unsigned long long *mask_cpu = new unsigned long long [boxes_num * col_blocks];
-    std::vector<unsigned long long> mask_cpu(boxes_num * col_blocks);
+    ensure_nms_workspace(
+        mask_elems,
+        col_blocks
+    );
 
-//    printf("boxes_num=%d, col_blocks=%d\n", boxes_num, col_blocks);
-    CHECK_ERROR(cudaMemcpy(&mask_cpu[0], mask_data, boxes_num * col_blocks * sizeof(unsigned long long),
-                           cudaMemcpyDeviceToHost));
+    NmsWorkspace &ws = g_nms_workspace;
 
-    cudaFree(mask_data);
+    nmsNormalLauncher(
+        boxes_data,
+        ws.mask_gpu,
+        boxes_num,
+        nms_overlap_thresh
+    );
 
-    unsigned long long remv_cpu[col_blocks];
-    memset(remv_cpu, 0, col_blocks * sizeof(unsigned long long));
+    CHECK_ERROR(
+        cudaMemcpy(
+            ws.mask_cpu,
+            ws.mask_gpu,
+            mask_elems * sizeof(unsigned long long),
+            cudaMemcpyDeviceToHost
+        )
+    );
 
     int num_to_keep = 0;
 
@@ -213,17 +412,24 @@ int nms_normal_gpu(at::Tensor boxes, at::Tensor keep, float nms_overlap_thresh){
         int nblock = i / THREADS_PER_BLOCK_NMS;
         int inblock = i % THREADS_PER_BLOCK_NMS;
 
-        if (!(remv_cpu[nblock] & (1ULL << inblock))){
+        if (!(ws.remv_cpu[nblock] & (1ULL << inblock))){
             keep_data[num_to_keep++] = i;
-            unsigned long long *p = &mask_cpu[0] + i * col_blocks;
+
+            unsigned long long *p =
+                ws.mask_cpu +
+                static_cast<size_t>(i) *
+                static_cast<size_t>(col_blocks);
+
             for (int j = nblock; j < col_blocks; j++){
-                remv_cpu[j] |= p[j];
+                ws.remv_cpu[j] |= p[j];
             }
         }
     }
-    if ( cudaSuccess != cudaGetLastError() ) printf( "Error!\n" );
+
+    if (cudaSuccess != cudaGetLastError()) {
+        printf("Error!\n");
+    }
 
     return num_to_keep;
 }
-
 
