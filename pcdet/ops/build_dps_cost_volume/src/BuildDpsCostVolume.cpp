@@ -25,7 +25,7 @@ at::Tensor BuildDpsCostVolume_forward(const at::Tensor &left,
                                    const int sep,
                                    const int interval)
 {
-  if (left.type().is_cuda())
+  if (left.is_cuda())
   {
 #ifdef WITH_CUDA
     return BuildDpsCostVolume_forward_cuda(left, right, shift, psv_channels, downsample, sep, interval);
@@ -44,7 +44,7 @@ std::tuple<at::Tensor, at::Tensor> BuildDpsCostVolume_backward(const at::Tensor 
                                                             const int sep,
                                                             const int interval)
 {
-  if (grad.type().is_cuda())
+  if (grad.is_cuda())
   {
 #ifdef WITH_CUDA
     return BuildDpsCostVolume_backward_cuda(grad, shift, psv_channels, downsample, channels, sep, interval);

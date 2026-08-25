@@ -1,10 +1,13 @@
+#include <ATen/cuda/Atomic.cuh>
+#include <c10/cuda/CUDAException.h>
+#ifndef DIVUP
+#define DIVUP(m, n) (((m) + (n) - 1) / (n))
+#endif
 // Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 
-#include <THC/THC.h>
-#include <THC/THCAtomics.cuh>
-#include <THC/THCDeviceUtils.cuh>
+
 
 // TODO make it in a common file
 #define CUDA_1D_KERNEL_LOOP(i, n)                            \
@@ -218,8 +221,8 @@ at::Tensor BuildDpsGeometryVolume_forward_cuda(const at::Tensor& img,
                                  const at::Tensor& disp_channels,
                                  const int sep,
                                  const int interval) {
-  AT_ASSERTM(img.type().is_cuda(), "img must be a CUDA tensor");
-  AT_ASSERTM(coord.type().is_cuda(), "coord must be a CUDA tensor");
+  AT_ASSERTM(img.is_cuda(), "img must be a CUDA tensor");
+  AT_ASSERTM(coord.is_cuda(), "coord must be a CUDA tensor");
 
   AT_ASSERTM((img.size(0) == coord.size(0)) && (coord.size(4) == 2), \
     "Image and coord should of same batch.");
@@ -237,20 +240,20 @@ at::Tensor BuildDpsGeometryVolume_forward_cuda(const at::Tensor& img,
   auto output_size = num_batch * sep * z_num * y_num * x_num;
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-  dim3 grid(std::min(THCCeilDiv((long)(output_size), 512L), 4096L));
+  dim3 grid(std::min(DIVUP((long)(output_size), 512L), 4096L));
   dim3 block(512);
 
   if (output.numel() == 0) {
-    THCudaCheck(cudaGetLastError());
+    C10_CUDA_CHECK(cudaGetLastError());
     return output;
   }
 
-  AT_DISPATCH_FLOATING_TYPES_AND_HALF(img.type(), "BuildDpsGeometryVolume_forward", [&] {
+  AT_DISPATCH_FLOATING_TYPES_AND_HALF(img.scalar_type(), "BuildDpsGeometryVolume_forward", [&] {
     BuildDpsGeometryVolumeForward<scalar_t><<<grid, block, 0, stream>>>(
          output_size,
-         img.contiguous().data<scalar_t>(),
-         coord.contiguous().data<scalar_t>(),
-         disp_channels.contiguous().data<int>(),
+         img.contiguous().data_ptr<scalar_t>(),
+         coord.contiguous().data_ptr<scalar_t>(),
+         disp_channels.contiguous().data_ptr<int>(),
          num_batch,
          channels,
          height,
@@ -260,9 +263,9 @@ at::Tensor BuildDpsGeometryVolume_forward_cuda(const at::Tensor& img,
          z_num,
          y_num,
          x_num,
-         output.data<scalar_t>());
+         output.data_ptr<scalar_t>());
   });
-  THCudaCheck(cudaGetLastError());
+  C10_CUDA_CHECK(cudaGetLastError());
   return output;
 }
 
@@ -275,7 +278,7 @@ at::Tensor BuildDpsGeometryVolume_backward_cuda(const at::Tensor& grad,
                                   const int channels,
                                   const int sep,
                                   const int interval) {
-  AT_ASSERTM(coord.type().is_cuda(), "coord must be a CUDA tensor");
+  AT_ASSERTM(coord.is_cuda(), "coord must be a CUDA tensor");
 
   auto num_batch = grad.size(0);
   auto z_num = grad.size(2);
@@ -289,21 +292,21 @@ at::Tensor BuildDpsGeometryVolume_backward_cuda(const at::Tensor& grad,
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-  dim3 grid(std::min(THCCeilDiv((long)grad.numel(), 512L), 4096L));
+  dim3 grid(std::min(DIVUP((long)grad.numel(), 512L), 4096L));
   dim3 block(512);
 
   // handle possibly empty gradients
   if (grad.numel() == 0) {
-    THCudaCheck(cudaGetLastError());
+    C10_CUDA_CHECK(cudaGetLastError());
     return grad_input;
   }
 
-  AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad.type(), "BuildDpsGeometryVolume_backward", [&] {
+  AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad.scalar_type(), "BuildDpsGeometryVolume_backward", [&] {
     BuildDpsGeometryVolumeBackwardFeature<scalar_t><<<grid, block, 0, stream>>>(
          grad.numel(),
-         grad.contiguous().data<scalar_t>(),
-         coord.contiguous().data<scalar_t>(),
-         disp_channels.contiguous().data<int>(),
+         grad.contiguous().data_ptr<scalar_t>(),
+         coord.contiguous().data_ptr<scalar_t>(),
+         disp_channels.contiguous().data_ptr<int>(),
          num_batch,
          channels,
          height,
@@ -313,9 +316,9 @@ at::Tensor BuildDpsGeometryVolume_backward_cuda(const at::Tensor& grad,
          z_num,
          y_num,
          x_num,
-         grad_input.data<scalar_t>());
+         grad_input.data_ptr<scalar_t>());
   });
-  THCudaCheck(cudaGetLastError());
+  C10_CUDA_CHECK(cudaGetLastError());
   return grad_input;
 }
 

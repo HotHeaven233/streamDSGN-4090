@@ -22,7 +22,7 @@ at::Tensor BuildDpsGeometryVolume_forward(const at::Tensor &img,
                                    const int sep,
                                    const int interval)
 {
-  if (img.type().is_cuda())
+  if (img.is_cuda())
   {
 #ifdef WITH_CUDA
     return BuildDpsGeometryVolume_forward_cuda(img, coord, disp_channels, sep, interval);
@@ -42,7 +42,7 @@ at::Tensor BuildDpsGeometryVolume_backward(const at::Tensor &grad,
                                                             const int sep,
                                                             const int interval)
 {
-  if (grad.type().is_cuda())
+  if (grad.is_cuda())
   {
 #ifdef WITH_CUDA
     return BuildDpsGeometryVolume_backward_cuda(grad, coord, disp_channels, height, width, channels, sep, interval);

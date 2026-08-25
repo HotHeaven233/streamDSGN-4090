@@ -1,0 +1,68 @@
+DATASET: StereoKittiStreaming
+DATA_PATH: ./data/kitti_tracking
+ANNOS_FREQUENCY: 10
+PREPARE_PATH: frame_stride_1-len_frames_40-token
+FLIP: true
+FORCE_FLIP: false
+POINT_CLOUD_RANGE:
+- 2
+- -30.4
+- -3
+- 59.6
+- 30.4
+- 1
+VOXEL_SIZE:
+- 0.05
+- 0.05
+- 0.1
+STEREO_VOXEL_SIZE:
+- 0.2
+- 0.2
+- 0.2
+DATA_SPLIT:
+  train: train
+  test: val
+INFO_PATH:
+  train:
+  - kitti_infos_train.pkl
+  test:
+  - kitti_infos_val.pkl
+USE_VAN: true
+USE_PERSON_SITTING: true
+FOV_POINTS_ONLY: true
+BOXES_GT_IN_CAM2_VIEW: false
+GENERATE_CORNER_HEATMAP: false
+CAT_REFLECT_DIM: false
+TRAIN_DATA_AUGMENTOR:
+- NAME: random_crop
+  MIN_REL_X: 0
+  MAX_REL_X: 0
+  MIN_REL_Y: 1.0
+  MAX_REL_Y: 1.0
+  MAX_CROP_H: 320
+  MAX_CROP_W: 1248
+- NAME: filter_truncated
+  AREA_RATIO_THRESH: null
+  AREA_2D_RATIO_THRESH: null
+  GT_TRUNCATED_THRESH: 0.98
+TEST_DATA_AUGMENTOR:
+- NAME: random_crop
+  MIN_REL_X: 0
+  MAX_REL_X: 0
+  MIN_REL_Y: 1.0
+  MAX_REL_Y: 1.0
+  MAX_CROP_H: 320
+  MAX_CROP_W: 1248
+POINT_FEATURE_ENCODING:
+  encoding_type: absolute_coordinates_encoding
+  used_feature_list:
+  - x
+  - y
+  - z
+  src_feature_list:
+  - x
+  - y
+  - z
+DATA_PROCESSOR:
+- NAME: mask_stream_points_and_boxes_outside_range
+  REMOVE_OUTSIDE_BOXES: true

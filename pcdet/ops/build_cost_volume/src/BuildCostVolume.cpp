@@ -15,7 +15,7 @@ at::Tensor BuildCostVolume_forward(const at::Tensor &left,
                                    const at::Tensor &shift,
                                    const int downsample)
 {
-  if (left.type().is_cuda())
+  if (left.is_cuda())
   {
 #ifdef WITH_CUDA
     return BuildCostVolume_forward_cuda(left, right, shift, downsample);
@@ -30,7 +30,7 @@ std::tuple<at::Tensor, at::Tensor> BuildCostVolume_backward(const at::Tensor &gr
                                                             const at::Tensor &shift,
                                                             const int downsample)
 {
-  if (grad.type().is_cuda())
+  if (grad.is_cuda())
   {
 #ifdef WITH_CUDA
     return BuildCostVolume_backward_cuda(grad, shift, downsample);

@@ -12,7 +12,7 @@ at::Tensor BuildGeometryVolume_backward_cuda(const at::Tensor &grad,
 at::Tensor BuildGeometryVolume_forward(const at::Tensor &img,
                                    const at::Tensor &coord)
 {
-  if (img.type().is_cuda())
+  if (img.is_cuda())
   {
 #ifdef WITH_CUDA
     return BuildGeometryVolume_forward_cuda(img, coord);
@@ -28,7 +28,7 @@ at::Tensor BuildGeometryVolume_backward(const at::Tensor &grad,
                                                             const int height,
                                                             const int width)
 {
-  if (grad.type().is_cuda())
+  if (grad.is_cuda())
   {
 #ifdef WITH_CUDA
     return BuildGeometryVolume_backward_cuda(grad, coord, height, width);

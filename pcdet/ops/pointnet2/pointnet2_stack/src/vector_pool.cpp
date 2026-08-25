@@ -10,15 +10,13 @@ All Rights Reserved 2020.
 
 #include <torch/serialize/tensor.h>
 #include <vector>
-#include <THC/THC.h>
+
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 #include "vector_pool_gpu.h"
 
-extern THCState *state;
-
 #define CHECK_CUDA(x) do { \
-  if (!x.type().is_cuda()) { \
+  if (!x.is_cuda()) { \
     fprintf(stderr, "%s must be CUDA tensor at %s:%d\n", #x, __FILE__, __LINE__); \
     exit(-1); \
   } \
@@ -55,13 +53,13 @@ int query_stacked_local_neighbor_idxs_wrapper_stack(at::Tensor support_xyz_tenso
     CHECK_INPUT(start_len_tensor);
     CHECK_INPUT(cumsum_tensor);
 
-    const float *support_xyz = support_xyz_tensor.data<float>();
-    const int *xyz_batch_cnt = xyz_batch_cnt_tensor.data<int>();
-    const float *new_xyz = new_xyz_tensor.data<float>();
-    const int *new_xyz_batch_cnt = new_xyz_batch_cnt_tensor.data<int>();
-    int *stack_neighbor_idxs = stack_neighbor_idxs_tensor.data<int>();
-    int *start_len = start_len_tensor.data<int>();
-    int *cumsum = cumsum_tensor.data<int>();
+    const float *support_xyz = support_xyz_tensor.data_ptr<float>();
+    const int *xyz_batch_cnt = xyz_batch_cnt_tensor.data_ptr<int>();
+    const float *new_xyz = new_xyz_tensor.data_ptr<float>();
+    const int *new_xyz_batch_cnt = new_xyz_batch_cnt_tensor.data_ptr<int>();
+    int *stack_neighbor_idxs = stack_neighbor_idxs_tensor.data_ptr<int>();
+    int *start_len = start_len_tensor.data_ptr<int>();
+    int *cumsum = cumsum_tensor.data_ptr<int>();
 
     int batch_size = xyz_batch_cnt_tensor.size(0);
     int M = new_xyz_tensor.size(0);
@@ -96,13 +94,13 @@ int query_three_nn_by_stacked_local_idxs_wrapper_stack(at::Tensor support_xyz_te
     CHECK_INPUT(stack_neighbor_idxs_tensor);
     CHECK_INPUT(start_len_tensor);
 
-    const float *support_xyz = support_xyz_tensor.data<float>();
-    const float *new_xyz = new_xyz_tensor.data<float>();
-    const float *new_xyz_grid_centers = new_xyz_grid_centers_tensor.data<float>();
-    int *new_xyz_grid_idxs = new_xyz_grid_idxs_tensor.data<int>();
-    float *new_xyz_grid_dist2 = new_xyz_grid_dist2_tensor.data<float>();
-    int *stack_neighbor_idxs = stack_neighbor_idxs_tensor.data<int>();
-    int *start_len = start_len_tensor.data<int>();
+    const float *support_xyz = support_xyz_tensor.data_ptr<float>();
+    const float *new_xyz = new_xyz_tensor.data_ptr<float>();
+    const float *new_xyz_grid_centers = new_xyz_grid_centers_tensor.data_ptr<float>();
+    int *new_xyz_grid_idxs = new_xyz_grid_idxs_tensor.data_ptr<int>();
+    float *new_xyz_grid_dist2 = new_xyz_grid_dist2_tensor.data_ptr<float>();
+    int *stack_neighbor_idxs = stack_neighbor_idxs_tensor.data_ptr<int>();
+    int *start_len = start_len_tensor.data_ptr<int>();
 
     query_three_nn_by_stacked_local_idxs_kernel_launcher_stack(
         support_xyz, new_xyz, new_xyz_grid_centers,
@@ -142,15 +140,15 @@ int vector_pool_wrapper_stack(at::Tensor support_xyz_tensor, at::Tensor xyz_batc
     CHECK_INPUT(point_cnt_of_grid_tensor);
     CHECK_INPUT(grouped_idxs_tensor);
 
-    const float *support_xyz = support_xyz_tensor.data<float>();
-    const float *support_features = support_features_tensor.data<float>();
-    const int *xyz_batch_cnt = xyz_batch_cnt_tensor.data<int>();
-    const float *new_xyz = new_xyz_tensor.data<float>();
-    const int *new_xyz_batch_cnt = new_xyz_batch_cnt_tensor.data<int>();
-    float *new_features = new_features_tensor.data<float>();
-    float *new_local_xyz = new_local_xyz_tensor.data<float>();
-    int *point_cnt_of_grid = point_cnt_of_grid_tensor.data<int>();
-    int *grouped_idxs = grouped_idxs_tensor.data<int>();
+    const float *support_xyz = support_xyz_tensor.data_ptr<float>();
+    const float *support_features = support_features_tensor.data_ptr<float>();
+    const int *xyz_batch_cnt = xyz_batch_cnt_tensor.data_ptr<int>();
+    const float *new_xyz = new_xyz_tensor.data_ptr<float>();
+    const int *new_xyz_batch_cnt = new_xyz_batch_cnt_tensor.data_ptr<int>();
+    float *new_features = new_features_tensor.data_ptr<float>();
+    float *new_local_xyz = new_local_xyz_tensor.data_ptr<float>();
+    int *point_cnt_of_grid = point_cnt_of_grid_tensor.data_ptr<int>();
+    int *grouped_idxs = grouped_idxs_tensor.data_ptr<int>();
 
     int N = support_xyz_tensor.size(0);
     int batch_size = xyz_batch_cnt_tensor.size(0);
@@ -190,10 +188,10 @@ int vector_pool_grad_wrapper_stack(at::Tensor grad_new_features_tensor,
     int num_total_grids = point_cnt_of_grid_tensor.size(1);
     int num_max_sum_points = grouped_idxs_tensor.size(0);
 
-    const float *grad_new_features = grad_new_features_tensor.data<float>();
-    const int *point_cnt_of_grid = point_cnt_of_grid_tensor.data<int>();
-    const int *grouped_idxs = grouped_idxs_tensor.data<int>();
-    float *grad_support_features = grad_support_features_tensor.data<float>();
+    const float *grad_new_features = grad_new_features_tensor.data_ptr<float>();
+    const int *point_cnt_of_grid = point_cnt_of_grid_tensor.data_ptr<int>();
+    const int *grouped_idxs = grouped_idxs_tensor.data_ptr<int>();
+    float *grad_support_features = grad_support_features_tensor.data_ptr<float>();
 
     vector_pool_grad_kernel_launcher_stack(
         grad_new_features, point_cnt_of_grid, grouped_idxs, grad_support_features,

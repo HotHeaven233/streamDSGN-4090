@@ -1,10 +1,13 @@
+#include <ATen/cuda/Atomic.cuh>
+#include <c10/cuda/CUDAException.h>
+#ifndef DIVUP
+#define DIVUP(m, n) (((m) + (n) - 1) / (n))
+#endif
 // Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 
-#include <THC/THC.h>
-#include <THC/THCAtomics.cuh>
-#include <THC/THCDeviceUtils.cuh>
+
 
 // TODO make it in a common file
 #define CUDA_1D_KERNEL_LOOP(i, n)                            \
@@ -209,9 +212,9 @@ at::Tensor BuildCostVolume_forward_cuda(const at::Tensor& left,
                                  const at::Tensor& right,
                                  const at::Tensor& shift,
                                  const int downsample) {
-  AT_ASSERTM(left.type().is_cuda(), "left must be a CUDA tensor");
-  AT_ASSERTM(right.type().is_cuda(), "right must be a CUDA tensor");
-  AT_ASSERTM(shift.type().is_cuda(), "shift must be a CUDA tensor");
+  AT_ASSERTM(left.is_cuda(), "left must be a CUDA tensor");
+  AT_ASSERTM(right.is_cuda(), "right must be a CUDA tensor");
+  AT_ASSERTM(shift.is_cuda(), "shift must be a CUDA tensor");
 
   AT_ASSERTM((left.size(0) == right.size(0)) && (left.size(1) == right.size(1)) && \
     (left.size(2) == right.size(2)) && (left.size(3) == right.size(3)), \
@@ -229,29 +232,29 @@ at::Tensor BuildCostVolume_forward_cuda(const at::Tensor& left,
   auto output_size = num_batch * channels * 2 * max_disp * height * width;
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-  dim3 grid(std::min(THCCeilDiv((long)(output_size / 2), 512L), 4096L));
+  dim3 grid(std::min(DIVUP((long)(output_size / 2), 512L), 4096L));
   dim3 block(512);
 
   if (output.numel() == 0) {
-    THCudaCheck(cudaGetLastError());
+    C10_CUDA_CHECK(cudaGetLastError());
     return output;
   }
 
-  AT_DISPATCH_FLOATING_TYPES(left.type(), "BuildCostVolume_forward", [&] {
+  AT_DISPATCH_FLOATING_TYPES(left.scalar_type(), "BuildCostVolume_forward", [&] {
     BuildCostVolumeForward<scalar_t><<<grid, block, 0, stream>>>(
          output_size / 2,
-         left.contiguous().data<scalar_t>(),
-         right.contiguous().data<scalar_t>(),
-         shift.contiguous().data<scalar_t>(),
+         left.contiguous().data_ptr<scalar_t>(),
+         right.contiguous().data_ptr<scalar_t>(),
+         shift.contiguous().data_ptr<scalar_t>(),
          num_batch,
          channels,
          height,
          width,
          max_disp,
-         output.data<scalar_t>(),
+         output.data_ptr<scalar_t>(),
          downsample);
   });
-  THCudaCheck(cudaGetLastError());
+  C10_CUDA_CHECK(cudaGetLastError());
   return output;
 }
 
@@ -259,7 +262,7 @@ at::Tensor BuildCostVolume_forward_cuda(const at::Tensor& left,
 std::tuple<at::Tensor, at::Tensor> BuildCostVolume_backward_cuda(const at::Tensor& grad,
                                   const at::Tensor& shift,
                                   const int downsample) {
-  AT_ASSERTM(shift.type().is_cuda(), "shift must be a CUDA tensor");
+  AT_ASSERTM(shift.is_cuda(), "shift must be a CUDA tensor");
 
   auto num_batch = grad.size(0);
   auto channels = grad.size(1) / 2;
@@ -275,30 +278,30 @@ std::tuple<at::Tensor, at::Tensor> BuildCostVolume_backward_cuda(const at::Tenso
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-  dim3 grid(std::min(THCCeilDiv((long)grad.numel(), 512L), 4096L));
+  dim3 grid(std::min(DIVUP((long)grad.numel(), 512L), 4096L));
   dim3 block(512);
 
   // handle possibly empty gradients
   if (grad.numel() == 0) {
-    THCudaCheck(cudaGetLastError());
+    C10_CUDA_CHECK(cudaGetLastError());
     return std::make_tuple(grad_left, grad_right);
   }
 
-  AT_DISPATCH_FLOATING_TYPES(grad.type(), "BuildCostVolume_backward", [&] {
+  AT_DISPATCH_FLOATING_TYPES(grad.scalar_type(), "BuildCostVolume_backward", [&] {
     BuildCostVolumeBackwardFeature<scalar_t><<<grid, block, 0, stream>>>(
          grad.numel() / 2,
-         grad.contiguous().data<scalar_t>(),
-         shift.contiguous().data<scalar_t>(),
+         grad.contiguous().data_ptr<scalar_t>(),
+         shift.contiguous().data_ptr<scalar_t>(),
          num_batch,
          channels,
          height,
          width,
          max_disp,
-         grad_left.data<scalar_t>(),
-         grad_right.data<scalar_t>(),
+         grad_left.data_ptr<scalar_t>(),
+         grad_right.data_ptr<scalar_t>(),
          downsample);
   });
-  THCudaCheck(cudaGetLastError());
+  C10_CUDA_CHECK(cudaGetLastError());
   return std::make_tuple(grad_left, grad_right);
 }
 

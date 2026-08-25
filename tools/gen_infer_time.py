@@ -73,7 +73,7 @@ def main():
         model.load_params_from_file(
             filename=args.ckpt, logger=logger, to_cpu=True)
     
-    time_files = Path('outputs') / 'inference_time' / (cfg.TAG + '.json')
+    time_files = Path(cfg.DATA_CONFIG.INFER_TIME_PATH)
     if args.time_exist:
         if not time_files.exists():
             logger.info('time file is not exist!')
@@ -100,7 +100,7 @@ def main():
                 logger.info(
                     f'Visualized sample index: \t{idx + 1}, \tspend time: \t{(t2-t1)*1000:.3f}')
 
-                if idx == 501:
+                if idx >= 501:
                     break
 
         time_samples = np.array([float(x) for x in spend_time[1:]])

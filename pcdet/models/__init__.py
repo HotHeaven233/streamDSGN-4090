@@ -3,26 +3,21 @@ from collections import namedtuple
 import numpy as np
 import torch
 
-from .detectors_lidar import build_detector as build_lidar_detector
-from .detectors_stereo import build_detector as build_stereo_detector
-from .detectors_stream import build_detector as build_stream_detector
-
-
 def build_network(model_cfg, num_class, dataset):
+    # Import only the detector family actually requested.
+    # This avoids importing unrelated LiDAR/spconv modules.
     if model_cfg['NAME'].startswith('stereo'):
-        model = build_stereo_detector(
-            model_cfg=model_cfg, num_class=num_class, dataset=dataset
-        )
+        from .detectors_stereo import build_detector
     elif model_cfg['NAME'].startswith('stream'):
-        model = build_stream_detector(
-            model_cfg=model_cfg, num_class=num_class, dataset=dataset
-        )
+        from .detectors_stream import build_detector
     else:
-        model = build_lidar_detector(
-            model_cfg=model_cfg, num_class=num_class, dataset=dataset
-        )
-    return model
+        from .detectors_lidar import build_detector
 
+    return build_detector(
+        model_cfg=model_cfg,
+        num_class=num_class,
+        dataset=dataset
+    )
 
 def load_data_to_gpu(batch_dict):
     def process_single_frame(single_dict):
